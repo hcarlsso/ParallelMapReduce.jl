@@ -1,7 +1,7 @@
 name = "ParallelMapReduce"
 uuid = "35c9ef8c-44cb-42a7-bccd-f3b9e73321fd"
 authors = ["Hakan Carlsson <hakan.carlsson@gmail.com>"]
-version = "0.1.0"
+version = "0.0.1"
 
 [deps]
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"

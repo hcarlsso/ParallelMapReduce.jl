@@ -4,7 +4,12 @@ using Distributed
 
 @testset "Pmapreduce" begin
 
-    addprocs(2)
+    if nprocs() == 1
+        addprocs(2)
+    elseif nworkers() > 2
+        error("Too many processes")
+    end
+
     @everywhere using Pkg
     @everywhere pkg"activate ."
     @everywhere pkg"precompile"
@@ -15,17 +20,21 @@ using Distributed
             n
         end
 
-        args = [3, ones(Int, 9)...]
+        args = [5, ones(Int, 9)...]
 
         val_even, t_even  = @timed pmapreduce(f, +, args)
-        val_uneven, t_uneven  = @timed pmapreduce(f, +, args; uneven = true)
+        val_red_local, t_red_local  = @timed pmapreduce(
+            f, +, args; algorithm = :reduction_local
+        )
+        val_red_master, t_red_master  = @timed pmapreduce(
+            f, +, args; algorithm = :reduction_master
+        )
 
-        @test val_even == val_uneven
-        @test t_uneven < t_even
+        @test val_even ==  val_red_master == val_red_local
+        @test t_red_local < t_even
+        @test t_red_master < t_even
     end
 
     test()
-
-    wait(rmprocs(workers()))
 
 end

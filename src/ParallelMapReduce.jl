@@ -5,54 +5,65 @@ using Distributed
 export pmapreduce
 
 """
-    pmapreduce(f, op, itrs...; uneven = false)
+    pmapreduce(f, op, [::AbstractWorkerPool], c...; algorithm = :even)
 
-A parallel version of the function `mapreduce` using all available workers, where
-`f` is executed on all available workers, and the result is locally reduced using
-`op`. Finally, the reduced results on the workers are sent to the master node and
-further reduced.
+A parallel version of the function `mapreduce` using available workers, where
+`f` is applied to each element in `c`, and the result is reduced using
+`op`.
 
-By default, `uneven=false`, meaning `itrs` are evenly partitioned across workers,
-see `@distirbuted`. When specifying `uneven=true`, each element in `itrs` is sent
-to the next available worker, see `pmap`. Unlike `pmap`, the result is reduced
-locally, and then sent back to the master process.
-
+There are three choices for `algorithm`:
+- `:even`, evenly partitions the elements in `c` across workers, see `@distributed`.
+- `:reduction_local`, the elements in `c` are asynchronously distributed to the workers. Each element is sent to the next available worker. The result of `f` is reduced and stored locally. When `c` is exhausted, the local results are sent back to the master, who makes the final reduction.
+- `:reduction_master`, similar to `:reduction_local`, but the result of each computation of `f` is sent back to the master, where all reductions are made.
 """
-function pmapreduce(f, op, itrs...; uneven = false)
-    if uneven
-        return pmapreduce_uneven(f, op, itrs...)
+function pmapreduce(f, op, p::AbstractWorkerPool, c; algorithm = :even)
+    options = Dict(
+        :even => (f, op, p, c) -> pmapreduce_even(f, op, c),
+        :reduction_local => (f, op, p, c) -> pmapreduce_uneven(f, op, p, c),
+        :reduction_master => (f, op, p, c) -> pmapreduce_master_reduction(f, op, p, c)
+    )
+    if algorithm in keys(options)
+        return options[algorithm](f, op, p, c)
     else
-        return pmapreduce_even(f, op, itrs...)
+        error("Unsupported option $(algorithm)")
     end
 end
 
-function pmapreduce_even(f, op, itrs...)
-    @distributed op for arg in collect(zip(itrs...))
-        f(arg...)
+pmapreduce(f, op, p::AbstractWorkerPool, c1, c...; kwargs...) = pmapreduce(
+    a->f(a...), op, p, zip(c1, c...); kwargs...
+)
+pmapreduce(f, op, c; kwargs...) = pmapreduce(
+    f, op, default_worker_pool(), c; kwargs...
+)
+pmapreduce(f, op, c1, c...; kwargs...) = pmapreduce(
+    a->f(a...), op, zip(c1, c...); kwargs...
+)
+
+function pmapreduce_even(f, op, c)
+    @distributed op for arg in c
+        f(arg)
     end
 end
 
-function pmapreduce_uneven(f, op, itrs...)
-    itr = collect(zip(itrs...))
+function pmapreduce_uneven(f, op, p::AbstractWorkerPool, c)
 
-    all_w = workers()[1:min(nworkers(), length(itr))]
-    jobs = RemoteChannel(()-> Channel(length(all_w)))
-    res = RemoteChannel(()-> Channel(length(all_w)))
+    jobs = RemoteChannel(()-> Channel(length(p)))
+    res = RemoteChannel(()-> Channel(length(p)))
 
-    for pid in all_w
-        remotecall(_do_work_pmapreduce_uneven, pid, f, op, jobs, res)
+    for pid in p.workers
+        remote_do(_do_work_pmapreduce_uneven, pid, f, op, jobs, res)
     end
 
     # Make jobs
-    for job_arg in itr
-        put!(jobs, job_arg)
+    for arg in c
+        put!(jobs, arg)
     end
     close(jobs)
 
     # Collect results
     v = take!(res)
-    if length(all_w) > 1
-        for n in 2:length(all_w)
+    if length(p) > 1
+        for n in 2:length(p)
             v = op(v, take!(res))
         end
     end
@@ -68,7 +79,7 @@ function _do_work_pmapreduce_uneven(f, op, jobs, res)
         return nothing
     end
 
-    v = f(args...)
+    v = f(args)
 
     while true
         args = try
@@ -77,11 +88,20 @@ function _do_work_pmapreduce_uneven(f, op, jobs, res)
             # We are done
             break
         end
-        v = op(v, f(args...))
+        v = op(v, f(args))
     end
     put!(res, v)
     return nothing
 end
+"""
+    Collect results from nodes and reduce on master.
+"""
+function pmapreduce_master_reduction(f, op, p::AbstractWorkerPool, c)
 
+    iter = Base.AsyncGenerator(
+        y -> remotecall_fetch(f, p, y), c; ntasks = length(p)
+    )
+    return reduce(op, iter)
+end
 
 end # module
