@@ -11,9 +11,9 @@ end
 However, since `@distributed` partitions `itrs` evenly across nodes, some nodes
 may be idle if the nodes are different in computational speed, or equivalently
 if `f` takes different time to compute depending on the input. With the added option
-`pmapreduce(f, +, itrs...; algorithm = :reduction_local)`, computations are
+`pmapreduce(f, op, itrs...; algorithm = :reduction_local)`, computations are
 dynamically load balanced, that is, the elements in `itrs` are only distributed
-to a worker which is free. The result of each computation of `f` are stored
+to a worker which is free. The result of each computation of `f` is stored
 and reduced locally, until `itrs` is exhausted, and then sent back to the master
 process, where the results from the nodes are further reduced, thus saving
 communication bandwidth.
