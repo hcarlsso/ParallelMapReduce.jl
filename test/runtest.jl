@@ -33,8 +33,16 @@ using Distributed
         @test val_even ==  val_red_master == val_red_local
         @test t_red_local < t_even
         @test t_red_master < t_even
+
     end
 
     test()
 
+    mapf = x -> iseven(myid()) ? error("notfoobar") : x*2
+
+    res = pmapreduce(
+        mapf, +, 1:10; algorithm = :reduction_master,
+        retry_delays = fill(0.001, 1000)
+    )
+    @test res == sum(1:10 |> x-> 2*x)
 end

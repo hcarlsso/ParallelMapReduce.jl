@@ -4,6 +4,11 @@ using Distributed
 
 export pmapreduce
 
+
+# imports for use
+using Base: AsyncGenerator
+
+using Distributed: wrap_on_error, wrap_retry
 """
     pmapreduce(f, op, [::AbstractWorkerPool], c...; algorithm = :even)
 
@@ -13,14 +18,23 @@ A parallel version of the function `mapreduce` using available workers, where
 
 There are three choices for `algorithm`:
 - `:even`, evenly partitions the elements in `c` across workers, see `@distributed`.
-- `:reduction_local`, the elements in `c` are asynchronously distributed to the workers. Each element is sent to the next available worker. The result of `f` is reduced and stored locally. When `c` is exhausted, the local results are sent back to the master, who makes the final reduction.
+- `:reduction_local`, the elements in `c` are asynchronously distributed to the workers.
+Each element is sent to the next available worker. The result of `f` is reduced and stored locally. When `c` is exhausted, the local results are sent back to the master, who makes the final reduction.
 - `:reduction_master`, similar to `:reduction_local`, but the result of each computation of `f` is sent back to the master, where all reductions are made.
+
+The keywords: `distributed=true, on_error=nothing, retry_delays=[], retry_check=nothing`
+are the same as for [`pmap`](@ref).
 """
-function pmapreduce(f, op, p::AbstractWorkerPool, c; algorithm = :even)
+function pmapreduce(f, op, p::AbstractWorkerPool, c; algorithm = :even,
+                    distributed=true, on_error=nothing,
+                    retry_delays=[], retry_check=nothing)
     options = Dict(
         :even => (f, op, p, c) -> pmapreduce_even(f, op, c),
         :reduction_local => (f, op, p, c) -> pmapreduce_uneven(f, op, p, c),
-        :reduction_master => (f, op, p, c) -> pmapreduce_master_reduction(f, op, p, c)
+        :reduction_master => (f, op, p, c) -> pmapreduce_master_reduction(
+            f, op, p, c; distributed = distributed, on_error = on_error,
+            retry_delays = retry_delays, retry_check = retry_check
+        )
     )
     if algorithm in keys(options)
         return options[algorithm](f, op, p, c)
@@ -96,12 +110,31 @@ end
 """
     Collect results from nodes and reduce on master.
 """
-function pmapreduce_master_reduction(f, op, p::AbstractWorkerPool, c)
+function pmapreduce_master_reduction(f, op, p::AbstractWorkerPool, c;
+                                     distributed=true, on_error=nothing,
+                                     retry_delays=[], retry_check=nothing)
 
-    iter = Base.AsyncGenerator(
-        y -> remotecall_fetch(f, p, y), c; ntasks = length(p)
-    )
+    # Don't do remote calls if there are no workers.
+    if (length(p) == 0) || (length(p) == 1 && fetch(p.channel) == myid())
+        distributed = false
+    end
+
+    if on_error !== nothing
+        f = wrap_on_error(f, on_error)
+    end
+
+    if distributed
+        f = remote(p, f)
+    end
+
+    if length(retry_delays) > 0
+        f = wrap_retry(f, retry_delays, retry_check)
+    end
+
+    iter = AsyncGenerator(f, c; ntasks = ()->nworkers(p))
+
     return reduce(op, iter)
 end
 
 end # module
+<
