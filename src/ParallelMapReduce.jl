@@ -137,4 +137,3 @@ function pmapreduce_master_reduction(f, op, p::AbstractWorkerPool, c;
 end
 
 end # module
-<
